@@ -52,6 +52,7 @@
 #include <tempsensor.hpp>
 #include <velocity.hpp>
 #include <web_gravitymon.hpp>
+#include <Wire.h>
 
 #if defined(ESP32)
 #include <esp_attr.h>
@@ -95,10 +96,28 @@ RunMode runMode = RunMode::measurementMode;
 void checkSleepMode(float angle, float volt);
 void runGpioHardwareTests();
 
+// Kaldur: cut gyro power before deep sleep (no-op on other boards)
+void sensorPowerOff() {
+#if defined(PIN_SENSOR_VCC)
+  Wire.end();
+  digitalWrite(PIN_SENSOR_VCC, LOW);
+#endif
+}
+
 void setup() {
   PERF_BEGIN("run-time");
   PERF_BEGIN("main-setup");
   runtimeMillis = millis();
+
+#if defined(PIN_SENSOR_VCC) && defined(PIN_SENSOR_GND)
+  // Gyro is powered from GPIO pins, switch it on before anything talks I2C.
+  // During deep sleep the pins are released, so the gyro is unpowered.
+  pinMode(PIN_SENSOR_GND, OUTPUT);
+  digitalWrite(PIN_SENSOR_GND, LOW);
+  pinMode(PIN_SENSOR_VCC, OUTPUT);
+  digitalWrite(PIN_SENSOR_VCC, HIGH);
+  delay(50);  // MPU-6500 start-up time
+#endif
 
   ledOn(LedColor::WHITE);
 
@@ -475,6 +494,7 @@ void goToSleep(int sleepInterval) {
   myWifi.stopDoubleReset();  // Ensure we dont go into wifi mode when wakeup
   LittleFS.end();
   ledOff();
+  sensorPowerOff();
   delay(100);
   uint32_t wake = sleepInterval * 1000000;
   ESP.deepSleep(wake);
@@ -611,6 +631,7 @@ void checkSleepMode(float angle, float volt) {
     myWifi.stopDoubleReset();  // Ensure we dont go into wifi mode when wakeup
     LittleFS.end();
     ledOff();
+    sensorPowerOff();
     delay(100);
 #if defined(ESP8266)
     ESP.deepSleep(0);  // indefinite sleep

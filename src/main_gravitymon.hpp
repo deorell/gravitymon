@@ -28,7 +28,24 @@
 
 #include <Arduino.h>
 
-#if defined(D1_MINI)
+#if defined(KALDUR_XIAO)
+// Hardware config for Seeed XIAO ESP32-C3, "Kaldur" custom build
+// ------------------------------------------------------
+// Must be checked first: this build reuses the lolin_c3_mini board package,
+// so LOLIN_C3_MINI is also defined by script/board.py.
+// XIAO label -> GPIO: D0=2, D1=3, D2=4, D3=5, D4=6, D5=7
+// GPIO0/GPIO1 are not available on the XIAO headers.
+#define PIN_SDA 7          // D5
+#define PIN_SCL 6          // D4
+#define PIN_SENSOR_VCC 4   // D2, drives gyro VCC (HIGH = on)
+#define PIN_SENSOR_GND 5   // D3, gyro GND (held LOW)
+#define PIN_DS 3           // D1, DS18B20 data (4.7k pull-up to 3V3)
+#define PIN_VOLT 2         // D0/A0, battery divider (ADC1_CH2)
+// No PIN_CFG1/PIN_CFG2: the XIAO onboard RESET button is used instead.
+#define CFG_FILENAMEBIN "firmware32c3kaldur.bin"
+#define CFG_PCB "Kaldur"
+
+#elif defined(D1_MINI)
 // Hardware config for ESP8266-d1-mini, iSpindel hardware
 // ------------------------------------------------------
 #define PIN_SDA D3
