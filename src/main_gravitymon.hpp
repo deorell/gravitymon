@@ -39,8 +39,9 @@
 #define PIN_SCL 6          // D4
 #define PIN_SENSOR_VCC 4   // D2, drives gyro VCC (HIGH = on)
 #define PIN_SENSOR_GND 5   // D3, gyro GND (held LOW)
-#define PIN_DS 3           // D1, DS18B20 data (4.7k pull-up to 3V3)
-#define PIN_VOLT 2         // D0/A0, battery divider (ADC1_CH2)
+#define PIN_DS 2           // D0, DS18B20 data (4.7k pull-up to 3V3 also
+                           // keeps strapping pin GPIO2 HIGH at boot)
+#define PIN_VOLT 3         // D1/A1, battery divider (ADC1_CH3)
 // No PIN_CFG1/PIN_CFG2: the XIAO onboard RESET button is used instead.
 #define CFG_FILENAMEBIN "firmware32c3kaldur.bin"
 #define CFG_PCB "Kaldur"
