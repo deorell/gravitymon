@@ -99,9 +99,36 @@ void runGpioHardwareTests();
 // Kaldur: cut gyro power before deep sleep (no-op on other boards)
 void sensorPowerOff() {
 #if defined(PIN_SENSOR_VCC)
+  // Release the I2C lines before cutting power, so no current is pushed
+  // through SDA/SCL into the unpowered gyro (back-powering).
   Wire.end();
+  pinMode(PIN_SDA, INPUT);  // no internal pull-up/pull-down
+  pinMode(PIN_SCL, INPUT);
+  delay(1);
   digitalWrite(PIN_SENSOR_VCC, LOW);
 #endif
+}
+
+#if defined(ESP32)
+// Kaldur: consecutive measurement cycles without wifi, kept across deep sleep
+RTC_DATA_ATTR uint8_t wifiFailCount = 0;
+#endif
+
+// Kaldur: sleep time after a failed cycle (no wifi / no stable reading).
+// Never shorter than the normal interval; after repeated wifi failures the
+// interval doubles up to 1 hour, so a dead network cannot drain the battery.
+int failSleepInterval(bool wifiFailed) {
+  int base = myConfig.getSleepInterval();
+  int interval = base;
+#if defined(ESP32)
+  if (wifiFailed) {
+    if (wifiFailCount < 10) wifiFailCount++;
+    int cap = base > 3600 ? base : 3600;
+    for (int i = 2; i < wifiFailCount && interval < cap; i++) interval *= 2;
+    if (interval > cap) interval = cap;
+  }
+#endif
+  return interval;
 }
 
 void setup() {
@@ -520,10 +547,16 @@ void loop() {
       if (!myWifi.isConnected() &&
           myConfig.isWifiPushActive()) {  // no connection to wifi and we have
                                           // defined push targets.
+        int sleepTime = failSleepInterval(true);
         Log.notice(
-            F("MAIN: No connection to wifi established, sleeping for 60s." CR));
-        goToSleep(60);
+            F("MAIN: No connection to wifi established, sleeping for %ds." CR),
+            sleepTime);
+        goToSleep(sleepTime);
       }
+
+#if defined(ESP32)
+      if (myWifi.isConnected()) wifiFailCount = 0;
+#endif
 
       if (loopReadGravity()) {
         goToSleep(myConfig.getSleepInterval());
@@ -533,10 +566,12 @@ void loop() {
       // enter sleep for a short time to conserve battery.
       if (((millis() - stableGyroMillis) >
            10000L)) {  // 10s since last stable gyro reading
+        int sleepTime = failSleepInterval(false);
         Log.notice(
             F("MAIN: Unable to get a stable reading for 10s, sleeping for "
-              "60s." CR));
-        goToSleep(60);
+              "%ds." CR),
+            sleepTime);
+        goToSleep(sleepTime);
       }
 
       PERF_BEGIN("loop-gyro-read");
