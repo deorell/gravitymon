@@ -131,6 +131,65 @@ int failSleepInterval(bool wifiFailed) {
   return interval;
 }
 
+#if defined(KALDUR_XIAO)
+// Kaldur: development log in flash -> /kaldur.log (rotated to /kaldur2.log).
+// Read it in the web UI: Other -> Tools -> list files -> kaldur.log
+#include <esp_system.h>
+#include <stdarg.h>
+
+constexpr auto KALDUR_LOG = "/kaldur.log";
+constexpr auto KALDUR_LOG2 = "/kaldur2.log";
+constexpr size_t KALDUR_LOG_MAX = 16384;  // bytes per file, 2 files kept
+constexpr uint32_t KALDUR_CONFIG_NOWIFI_MS = 120000;  // 2 min
+
+RTC_DATA_ATTR uint32_t kaldurWake = 0;       // wakeups since last boot
+RTC_DATA_ATTR uint32_t kaldurElapsed = 0;    // est. seconds since last boot
+RTC_DATA_ATTR uint32_t kaldurPrevSleep = 0;  // last sleep time (s)
+RTC_DATA_ATTR uint32_t kaldurPrevRun = 0;    // last awake time (s)
+int kaldurPushCode = 0;                      // last push response, 0 = none
+
+void kaldurLog(const char *format, ...) {
+  char buf[128];
+  uint32_t t = kaldurElapsed + millis() / 1000;
+  int n = snprintf(buf, sizeof(buf), "#%lu +%lu:%02lu ",
+                   static_cast<unsigned long>(kaldurWake),
+                   static_cast<unsigned long>(t / 3600),
+                   static_cast<unsigned long>((t / 60) % 60));
+  va_list arg;
+  va_start(arg, format);
+  vsnprintf(buf + n, sizeof(buf) - n, format, arg);
+  va_end(arg);
+
+  File f = LittleFS.open(KALDUR_LOG, "a");
+  if (f && f.size() > KALDUR_LOG_MAX) {
+    f.close();
+    LittleFS.remove(KALDUR_LOG2);
+    LittleFS.rename(KALDUR_LOG, KALDUR_LOG2);
+    f = LittleFS.open(KALDUR_LOG, "a");
+  }
+  if (f) {
+    f.println(buf);
+    f.close();
+  }
+  Log.notice(F("KLOG: %s" CR), buf);
+}
+
+const char *kaldurResetReason(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    default: return "OTHER";
+  }
+}
+#endif  // KALDUR_XIAO
+
 void setup() {
   PERF_BEGIN("run-time");
   PERF_BEGIN("main-setup");
@@ -169,6 +228,20 @@ void setup() {
   myConfig.migrateHwSettings();
   myConfig.loadFile();
   PERF_END("main-config-load");
+
+#if defined(KALDUR_XIAO)
+  {
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (rr == ESP_RST_DEEPSLEEP) {
+      kaldurWake++;
+      kaldurElapsed += kaldurPrevSleep + kaldurPrevRun;
+    } else {
+      kaldurWake = 0;
+      kaldurElapsed = 0;
+      kaldurLog("BOOT reset=%s", kaldurResetReason(rr));
+    }
+  }
+#endif
 
   // For restoring ispindel backup to test migration
   // LittleFS.rename("/ispindel.json", "/config.json");
@@ -239,6 +312,15 @@ void setup() {
 
       myBatteryVoltage.read();
       checkSleepMode(myGyro.getAngle(), myBatteryVoltage.getVoltage());
+#if defined(KALDUR_XIAO)
+      if (runMode == RunMode::configurationMode) {
+        kaldurLog("CONFIG cal=%d gyro=%d a%.1f v%.2f skip=%d wifi=%d",
+                  myConfig.hasGyroCalibration() ? 1 : 0,
+                  myGyro.isConnected() ? 1 : 0, myGyro.getAngle(),
+                  myBatteryVoltage.getVoltage(), sleepModeAlwaysSkip ? 1 : 0,
+                  myWifi.isConnected() ? 1 : 0);
+      }
+#endif
       Log.notice(F("Main: Battery %F V, Gyro=%F, Run-mode=%d." CR),
                  myBatteryVoltage.getVoltage(), myGyro.getAngle(), runMode);
 
@@ -465,6 +547,9 @@ bool loopReadGravity() {
                                      (millis() - runtimeMillis) / 1000,
                                      myBatteryVoltage.getVoltage());
           push.sendAll(engine, BrewingPush::MeasurementType::GRAVITY);
+#if defined(KALDUR_XIAO)
+          kaldurPushCode = push.getLastResponseCode();
+#endif
         }
       }
       PERF_END("loop-push");
@@ -518,6 +603,16 @@ void goToSleep(int sleepInterval) {
                sleepInterval);
   }
 
+#if defined(KALDUR_XIAO)
+  kaldurLog("%c v%.2f a%.1f t%.1f w%d p%d r%.1f s%d",
+            runMode == RunMode::configurationMode ? 'C' : 'G', volt,
+            myGyro.getAngle(), myTempSensor.getTempC(),
+            myWifi.isConnected() ? static_cast<int>(WiFi.RSSI()) : 0,
+            kaldurPushCode, runtime / 1000, sleepInterval);
+  kaldurPrevSleep = sleepInterval;
+  kaldurPrevRun = static_cast<uint32_t>(runtime / 1000);
+#endif
+
   myWifi.stopDoubleReset();  // Ensure we dont go into wifi mode when wakeup
   LittleFS.end();
   ledOff();
@@ -538,6 +633,25 @@ void loop() {
       myWebServer.loop();
       myWifi.loop();
       loopGravityOnInterval();
+#if defined(KALDUR_XIAO)
+      // Config mode is useless without wifi (web UI unreachable): don't stay
+      // awake forever, e.g. lying flat in a fridge without coverage.
+      if (runMode == RunMode::configurationMode) {
+        static uint32_t wifiSeenMillis = 0;
+        if (myWifi.isConnected()) {
+          wifiSeenMillis = millis();
+#if defined(ESP32)
+          wifiFailCount = 0;
+#endif
+        } else if (millis() - wifiSeenMillis > KALDUR_CONFIG_NOWIFI_MS) {
+          int sleepTime = failSleepInterval(true);
+          kaldurLog("CONFIG no wifi for %lus, sleep %ds",
+                    static_cast<unsigned long>(KALDUR_CONFIG_NOWIFI_MS / 1000),
+                    sleepTime);
+          goToSleep(sleepTime);
+        }
+      }
+#endif
       delay(1);
       break;
 
@@ -663,6 +777,10 @@ void checkSleepMode(float angle, float volt) {
     Log.notice(
         F("Main: Charging/Storage mode entered, going to sleep for maximum "
           "time." CR));
+#if defined(KALDUR_XIAO)
+    kaldurLog("S storage sleep a%.1f v%.2f", angle, volt);
+    kaldurPrevSleep = 0;
+#endif
     myWifi.stopDoubleReset();  // Ensure we dont go into wifi mode when wakeup
     LittleFS.end();
     ledOff();
